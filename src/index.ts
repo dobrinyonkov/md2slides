@@ -1,344 +1,160 @@
-import { serve } from "bun";
-import index from "./index.html";
+import express from 'express';
+import { Request, Response, NextFunction } from 'express';
+import path from 'path';
+import fs from 'fs';
 
-// GitHub Personal Access Token - set this in your environment
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-const server = serve({
-  routes: {
-    // GitHub Gist API endpoints
-    "/api/gist/save": {
-      async POST(req) {
-        if (!GITHUB_TOKEN) {
-          return Response.json(
-            { error: "GitHub token not configured" },
-            { status: 500 }
-          );
-        }
+// ============================================================================
+// Server-Side Visitor Tracking Logging Middleware
+// ============================================================================
+// Logs visitor information without storing personal data:
+// - Timestamp (UTC)
+// - Request path
+// - Request method (GET, POST, etc.)
+// - User agent (browser/app info)
+// - Response status code
 
-        try {
-          const { title, content, gistId } = await req.json();
+interface VisitorLog {
+  timestamp: string;
+  path: string;
+  method: string;
+  userAgent: string;
+  statusCode: number;
+}
 
-          const gistData = {
-            description: title || "md2slides presentation",
-            public: false,
-            files: {
-              "presentation.md": {
-                content: content,
-              },
-              "metadata.json": {
-                content: JSON.stringify({ 
-                  title, 
-                  createdAt: new Date().toISOString(),
-                  updatedAt: new Date().toISOString()
-                }),
-              },
-            },
-          };
+// Function to format timestamp in ISO 8601 format
+const getTimestamp = (): string => {
+  return new Date().toISOString();
+};
 
-          let response;
-          let finalGistId = gistId;
+// Function to log visitor data
+const logVisitor = (log: VisitorLog): void => {
+  const logEntry = JSON.stringify(log);
+  console.log(`[VISITOR_LOG] ${logEntry}`);
+  
+  // Optional: Also write to a file for persistent storage
+  const logFilePath = path.join(process.cwd(), 'logs', 'visitor-tracking.log');
+  try {
+    const logsDir = path.dirname(logFilePath);
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+    }
+    fs.appendFileSync(logFilePath, logEntry + '\n');
+  } catch (error) {
+    console.error('Error writing to visitor log file:', error);
+  }
+};
 
-          if (gistId) {
-            // Try to update existing gist
-            response = await fetch(`https://api.github.com/gists/${gistId}`, {
-              method: "PATCH",
-              headers: {
-                Authorization: `token ${GITHUB_TOKEN}`,
-                "Content-Type": "application/json",
-                "User-Agent": "md2slides",
-              },
-              body: JSON.stringify(gistData),
-            });
-
-            // If update fails (not owner or gist deleted), create new
-            if (!response.ok) {
-              console.log("Update failed, creating new gist");
-              response = await fetch("https://api.github.com/gists", {
-                method: "POST",
-                headers: {
-                  Authorization: `token ${GITHUB_TOKEN}`,
-                  "Content-Type": "application/json",
-                  "User-Agent": "md2slides",
-                },
-                body: JSON.stringify(gistData),
-              });
-              finalGistId = null; // Will get new ID from response
-            }
-          } else {
-            // Create new gist
-            response = await fetch("https://api.github.com/gists", {
-              method: "POST",
-              headers: {
-                Authorization: `token ${GITHUB_TOKEN}`,
-                "Content-Type": "application/json",
-                "User-Agent": "md2slides",
-              },
-              body: JSON.stringify(gistData),
-            });
-          }
-
-          if (!response.ok) {
-            const error = await response.text();
-            console.error("GitHub API error:", error);
-            return Response.json(
-              { error: "Failed to save gist" },
-              { status: response.status }
-            );
-          }
-
-          const result = await response.json();
-          const resultId = finalGistId || result.id;
-
-          // Set cookie to track owned gists
-          const headers = new Headers();
-          headers.set("Content-Type", "application/json");
-          
-          // Get existing owned gists from cookie
-          const cookieHeader = req.headers.get("cookie") || "";
-          const cookies = Object.fromEntries(
-            cookieHeader.split(";").map(c => {
-              const [key, ...v] = c.trim().split("=");
-              return [key, v.join("=")];
-            }).filter(([k]) => k)
-          );
-          
-          const ownedGists = cookies.md2slides_owned ? JSON.parse(decodeURIComponent(cookies.md2slides_owned)) : [];
-          if (!ownedGists.includes(resultId)) {
-            ownedGists.push(resultId);
-          }
-          
-          // Set cookie (expires in 1 year)
-          headers.set(
-            "Set-Cookie",
-            `md2slides_owned=${encodeURIComponent(JSON.stringify(ownedGists))}; Path=/; Max-Age=31536000; SameSite=Lax`
-          );
-
-          return new Response(
-            JSON.stringify({
-              url: result.html_url,
-              id: resultId,
-              updated: !!finalGistId,
-            }),
-            { headers }
-          );
-        } catch (error) {
-          console.error("Error saving to gist:", error);
-          return Response.json(
-            { error: "Failed to save to gist" },
-            { status: 500 }
-          );
-        }
-      },
-    },
-
-    "/api/gist/list": async (req) => {
-      if (!GITHUB_TOKEN) {
-        return Response.json({ gists: [] });
-      }
-
-      try {
-        const cookieHeader = req.headers.get("cookie") || "";
-        const cookies = Object.fromEntries(
-          cookieHeader.split(";").map(c => {
-            const [key, ...v] = c.trim().split("=");
-            return [key, v.join("=")];
-          }).filter(([k]) => k)
-        );
-        
-        const ownedGists = cookies.md2slides_owned ? JSON.parse(decodeURIComponent(cookies.md2slides_owned)) : [];
-        
-        if (ownedGists.length === 0) {
-          return Response.json({ gists: [] });
-        }
-
-        // Fetch metadata for each owned gist
-        const gistPromises = ownedGists.map(async (gistId: string) => {
-          try {
-            const response = await fetch(`https://api.github.com/gists/${gistId}`, {
-              headers: {
-                Authorization: `token ${GITHUB_TOKEN}`,
-                "User-Agent": "md2slides",
-              },
-            });
-            
-            if (!response.ok) return null;
-            
-            const gist = await response.json();
-            let title = "Untitled Presentation";
-            
-            if (gist.files["metadata.json"]) {
-              try {
-                const metadata = JSON.parse(gist.files["metadata.json"].content);
-                title = metadata.title || title;
-              } catch (e) {
-                // Ignore parsing errors
-              }
-            }
-            
-            return {
-              id: gist.id,
-              title,
-              description: gist.description,
-              updatedAt: gist.updated_at,
-              url: gist.html_url,
-            };
-          } catch (error) {
-            return null;
-          }
-        });
-        
-        const gists = (await Promise.all(gistPromises)).filter(g => g !== null);
-        return Response.json({ gists });
-      } catch (error) {
-        console.error("Error listing gists:", error);
-        return Response.json({ gists: [] });
-      }
-    },
-
-    "/api/gist/delete/:id": {
-      async DELETE(req) {
-        if (!GITHUB_TOKEN) {
-          return Response.json(
-            { error: "GitHub token not configured" },
-            { status: 500 }
-          );
-        }
-
-        try {
-          const gistId = req.params.id;
-          
-          // Delete from GitHub
-          const response = await fetch(`https://api.github.com/gists/${gistId}`, {
-            method: "DELETE",
-            headers: {
-              Authorization: `token ${GITHUB_TOKEN}`,
-              "User-Agent": "md2slides",
-            },
-          });
-
-          if (!response.ok && response.status !== 404) {
-            return Response.json(
-              { error: "Failed to delete gist" },
-              { status: response.status }
-            );
-          }
-
-          // Remove from cookie
-          const cookieHeader = req.headers.get("cookie") || "";
-          const cookies = Object.fromEntries(
-            cookieHeader.split(";").map(c => {
-              const [key, ...v] = c.trim().split("=");
-              return [key, v.join("=")];
-            }).filter(([k]) => k)
-          );
-          
-          const ownedGists = cookies.md2slides_owned ? JSON.parse(decodeURIComponent(cookies.md2slides_owned)) : [];
-          const updatedGists = ownedGists.filter((id: string) => id !== gistId);
-          
-          const headers = new Headers();
-          headers.set("Content-Type", "application/json");
-          headers.set(
-            "Set-Cookie",
-            `md2slides_owned=${encodeURIComponent(JSON.stringify(updatedGists))}; Path=/; Max-Age=31536000; SameSite=Lax`
-          );
-
-          return new Response(
-            JSON.stringify({ success: true }),
-            { headers }
-          );
-        } catch (error) {
-          console.error("Error deleting gist:", error);
-          return Response.json(
-            { error: "Failed to delete gist" },
-            { status: 500 }
-          );
-        }
-      },
-    },
-
-    "/api/gist/check-ownership/:id": async (req) => {
-      try {
-        const gistId = req.params.id;
-        const cookieHeader = req.headers.get("cookie") || "";
-        const cookies = Object.fromEntries(
-          cookieHeader.split(";").map(c => {
-            const [key, ...v] = c.trim().split("=");
-            return [key, v.join("=")];
-          }).filter(([k]) => k)
-        );
-        
-        const ownedGists = cookies.md2slides_owned ? JSON.parse(decodeURIComponent(cookies.md2slides_owned)) : [];
-        const isOwned = ownedGists.includes(gistId);
-        
-        return Response.json({ owned: isOwned });
-      } catch (error) {
-        return Response.json({ owned: false });
-      }
-    },
-
-    "/api/gist/load/:id": async (req) => {
-      if (!GITHUB_TOKEN) {
-        return Response.json(
-          { error: "GitHub token not configured" },
-          { status: 500 }
-        );
-      }
-
-      try {
-        const gistId = req.params.id;
-        const response = await fetch(`https://api.github.com/gists/${gistId}`, {
-          headers: {
-            Authorization: `token ${GITHUB_TOKEN}`,
-            "User-Agent": "md2slides",
-          },
-        });
-
-        if (!response.ok) {
-          return Response.json(
-            { error: "Gist not found" },
-            { status: response.status }
-          );
-        }
-
-        const gist = await response.json();
-        const content = gist.files["presentation.md"]?.content || "";
-        let title = "Untitled Presentation";
-
-        if (gist.files["metadata.json"]) {
-          try {
-            const metadata = JSON.parse(gist.files["metadata.json"].content);
-            title = metadata.title || title;
-          } catch (e) {
-            // Ignore metadata parsing errors
-          }
-        }
-
-        return Response.json({ content, title });
-      } catch (error) {
-        console.error("Error loading from gist:", error);
-        return Response.json(
-          { error: "Failed to load from gist" },
-          { status: 500 }
-        );
-      }
-    },
-
-    // Serve index.html for all unmatched routes
-    "/*": index,
-  },
-
-  development: process.env.NODE_ENV !== "production" && {
-    // Enable browser hot reloading in development
-    hmr: true,
-
-    // Echo console logs from the browser to the server
-    console: true,
-  },
+// Middleware to capture and log visitor information
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const startTime = Date.now();
+  
+  // Capture the original res.send function
+  const originalSend = res.send;
+  
+  // Override res.send to log after response is sent
+  res.send = function(data: any): Response {
+    const responseTime = Date.now() - startTime;
+    
+    const visitorLog: VisitorLog = {
+      timestamp: getTimestamp(),
+      path: req.path,
+      method: req.method,
+      userAgent: req.get('user-agent') || 'Unknown',
+      statusCode: res.statusCode,
+    };
+    
+    logVisitor(visitorLog);
+    
+    // Call the original send method
+    return originalSend.call(this, data);
+  };
+  
+  next();
 });
 
-console.log(`🚀 Server running at ${server.url}`);
-if (!GITHUB_TOKEN) {
-  console.warn("⚠️  GITHUB_TOKEN not set - Gist features will not work");
-  console.warn("   Set GITHUB_TOKEN environment variable to enable Gist save/load");
-}
+// ============================================================================
+// Express Middleware Setup
+// ============================================================================
+
+// Parse JSON request bodies
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Serve static files from public directory
+app.use(express.static(path.join(__dirname, '../public')));
+
+// ============================================================================
+// API Endpoints
+// ============================================================================
+
+// Health check endpoint
+app.get('/health', (req: Request, res: Response) => {
+  res.json({ status: 'ok', timestamp: getTimestamp() });
+});
+
+// Conversion endpoint (example - customize as needed)
+app.post('/api/convert', (req: Request, res: Response) => {
+  try {
+    const { markdown } = req.body;
+    
+    if (!markdown) {
+      return res.status(400).json({ error: 'Markdown content is required' });
+    }
+    
+    // TODO: Add your markdown to slides conversion logic here
+    
+    res.json({
+      success: true,
+      message: 'Conversion processed',
+      timestamp: getTimestamp(),
+    });
+  } catch (error) {
+    console.error('Conversion error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Serve main index.html for all other routes (SPA support)
+app.get('*', (req: Request, res: Response) => {
+  const indexPath = path.join(__dirname, '../public/index.html');
+  
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).json({ error: 'Not found' });
+  }
+});
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// ============================================================================
+// Server Startup
+// ============================================================================
+
+const server = app.listen(PORT, () => {
+  console.log(`✓ Server is running on port ${PORT}`);
+  console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`✓ Visitor tracking enabled`);
+  console.log(`✓ Logs directory: ${path.join(process.cwd(), 'logs')}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    process.exit(0);
+  });
+});
+
+export default app;
