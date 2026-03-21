@@ -1,1 +1,6 @@
+/guides/*  /guides/:splat  200
+/guides  /guides/markdown-to-slides/  301
+/about  /about/  301
+/features  /features/  301
+/examples  /examples/  301
 /*  /index.html  200

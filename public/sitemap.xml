@@ -6,7 +6,32 @@
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://md2slides.com/guides/markdown-to-slides</loc>
+    <loc>https://md2slides.com/about/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://md2slides.com/features/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://md2slides.com/examples/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://md2slides.com/guides/markdown-to-slides/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://md2slides.com/guides/slides-from-ai/</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://md2slides.com/guides/presentation-tips/</loc>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
